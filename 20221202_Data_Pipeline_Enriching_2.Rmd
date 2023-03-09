@@ -1,0 +1,180 @@
+---
+title: "Untitled"
+author: "Elias Mayer"
+date: "2022-12-09"
+output: html_document
+---
+
+### Setup 
+
+
+```{r setup2}
+
+library("tidyverse")
+library("tidytext")
+library("tokenizers")
+library("tidymodels")
+library("stringi")
+library("purrr")
+library("lubridate")
+library ("plyr")
+library("stopwords") 
+library("readr")
+library("quanteda")
+library("quanteda.textstats")
+require("quanteda")
+library("TTR")
+library("qdapDictionaries")
+library("psych")
+library("lmtest")
+library("imputeTS")
+library("tseries")
+library("forecast")
+library("urca")
+
+#Exploratory
+library("SmartEDA")
+library("data.table")
+library("ragg")
+library("hrbrthemes")
+
+
+```
+
+### Disclaimer
+
+The code is not optimized and is just uploaded for transparency. All the paths are absolute and should be exchanged. This file creates excel files which contain, for the process, relevant filtered data and are therefore helpful in reducing the overall data amount. 
+This is important due to computational restrictions. All the data processes are obtained from Pushshift. For details, please see the associated work. This is part 2 on a 2-part script which prepares Reddit and Discord data for further processing. This script creates data sets based on the in script 1 identified Tickers.
+
+Now that obtained specific frequently mentioned tickers, we enrich the data with targeted sub-Reddit data, related to these tickers specifically. The scores were added via PRAW in a python script.
+Applying the PRAW lockup for all elements is necessary to gain scores (up vote, down vote rations) which are later important to weight sentiment. 
+
+Tickers of interest: "TLSS"  "UAPC"  "BBRW"  "DECN"  "RXMD"  "HCMC"  "OZSC"  "EEENF" "ILUS"  "PASO" 
+
+This pipeline is to create targeted data sources for the different tickers in different .csv files, this will make it easier to conduct the sentiment analysis. The training of the sentiment prediction will still be conducted on the whole ticker cleaned files. 
+
+
+## Clean specific new data (for ticker)
+
+```{r defineTicker, echo=FALSE}
+
+# Define the stock for which to create (filter) dataset - exchange the Ticker to create another filtered instance
+
+main_des = "UAPC"
+  
+target_Stock <- c(main_des,"United American")
+  
+stock_lookup <- paste(target_Stock, collapse = "|")
+
+```
+
+
+```{r loadData, echo=FALSE}
+
+# Load all data from previous instances and reduce on the target
+
+df_submissions_body <- read.csv("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/reddit_submissions/submissions.csv")
+
+df_submissions_title <- read.csv("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/reddit_submissions/submissions_title.csv")
+
+df_associated_comments <- read.csv("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/reddit_comments/associated_comments.csv")
+
+df_general_comments <- read.csv("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/reddit_comments/general_comments.csv")
+
+df_discord_comments <- read.csv("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/discord_comments/discord_comments.csv")
+
+```
+
+### Filter submission
+
+The submission data is filtered for an occurrence of the chosen Ticker symbol. 
+
+```{r submissions, echo=FALSE}
+
+# Submission headers filter for target 
+
+df_subn_title_target <- stringi::stri_detect_regex(df_submissions_title$title, pattern = stock_lookup)
+
+df_submissions_title_filterd <- df_submissions_title %>%  filter(df_subn_title_target) 
+
+# Submission body filter for target 
+
+df_subn_body_target <- stringi::stri_detect_regex(df_submissions_body$Body, pattern = stock_lookup)
+
+df_submissions_body_filterd <- df_submissions_body %>%  filter(df_subn_body_target) 
+
+```
+
+### Filter comments
+
+```{r CommentsAndAssociatedComments, echo=FALSE}
+
+# Comment headers filter for target 
+
+
+associated_comments_title <- dplyr::semi_join(df_associated_comments, df_submissions_title_filterd, by = c("link_id_body" = "id"))
+
+associated_comments_body <- dplyr::semi_join(df_associated_comments, df_submissions_body_filterd, by = c("link_id_body" = "id"))
+
+associated_comments_filtered <- bind_rows(associated_comments_title, associated_comments_body)
+
+
+# General comments 
+
+df_generaln_comments_target <- stringi::stri_detect_regex(df_general_comments$Body, pattern = stock_lookup)
+
+df_general_comments_filtered <- df_general_comments  %>%  filter(df_generaln_comments_target) 
+
+
+```
+
+### Filter discord comments
+
+
+```{r CommentsAndAssociatedComments, echo=FALSE}
+
+
+# General comments 
+
+df_discordn_comments_target <- stringi::stri_detect_regex(df_discord_comments$Body, pattern = stock_lookup)
+
+df_discord_comments_filtered <- df_discord_comments  %>%  filter(df_discordn_comments_target) 
+
+
+```
+
+
+
+```{r CommentsAndAssociatedComments, echo=FALSE}
+
+# Submissions
+
+strig_Exp_sub <- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/",main_des,"/submissions_",main_des,"_title.csv", sep='')
+
+readr::write_excel_csv(df_submissions_title_filterd, file = strig_Exp_sub)
+
+
+strig_Exp_sub_body <- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/",main_des,"/submissions_",main_des,"_body.csv", sep='')
+
+readr::write_excel_csv(df_submissions_body_filterd, file = strig_Exp_sub_body)
+
+# Comments  
+
+strig_Exp_ass_comment <- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/",main_des,"/associated_comments_",main_des,"_body.csv", sep='')
+
+readr::write_excel_csv(associated_comments_filtered, file = strig_Exp_ass_comment)
+
+
+strig_Exp_general_comment <- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/",main_des,"/general_comments_",main_des,"_body.csv", sep='')
+
+readr::write_excel_csv(df_general_comments_filtered, file = strig_Exp_general_comment)
+
+# Discord 
+
+strig_Exp_discord <- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/",main_des,"/discord_",main_des,"_body.csv", sep='')
+
+readr::write_excel_csv(df_discord_comments_filtered, file = strig_Exp_discord)
+
+```
+
+

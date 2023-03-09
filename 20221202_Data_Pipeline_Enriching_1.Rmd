@@ -1,0 +1,446 @@
+---
+title: "Data clean"
+author: "Elias Mayer"
+date: "2022-12-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Setup 
+
+```{r setup2}
+
+library("tidyverse")
+library("tidytext")
+library("tokenizers")
+library("tidymodels")
+library("stringi")
+library("purrr")
+library("lubridate")
+library ("plyr")
+library("stopwords") 
+library("readr")
+library("quanteda")
+library("quanteda.textstats")
+
+require("quanteda")
+
+# For stock symbols
+library("TTR")
+# English lexicons not sentiment
+library("qdapDictionaries")
+# Head tail
+library("psych")
+library("lmtest")
+
+# Fill gaps and plot to see possible correlation better 
+library("imputeTS")
+library("tseries")
+library("forecast")
+library("urca")
+
+#Exploratory
+library("SmartEDA")
+library("data.table")
+library("ragg")
+
+
+```
+
+### Disclaimer
+
+The code is not optimized and is just uploaded for transparency. All the paths are absolute and should be exchanged. This file creates excel files which contain, for the process, relevant filtered data and are therefore helpful in reducing the overall data amount. 
+This is important due to computational restrictions. All the data processes are obtained from Pushshift, for details please see the associated work. This is part 1 on a 2 part script which prepares Reddit and Discord data for further processing. 
+
+### Load datasets
+
+## Load stock tickers for exclusion, model terms and targets
+
+Information regarding stock symbol convention: https://www.investopedia.com/terms/s/stocksymbol.asp 
+
+Find relevant comments (direct mentioning of stock in question), comments belonging to submission mentioning the Stock explicitly, and discord comments mentioning the stock target explicitly. 
+For themes: https://github.com/hrbrmstr/hrbrthemes
+
+
+```{r loaddata, echo=FALSE, include=FALSE}
+
+basepath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/"
+
+
+## Stock Symbols 
+
+# Only OTC mearket traded 
+
+df_tickers <- read.csv(paste(basepath, "Stock_data_WF/Exchanges_tickers_otc_stocks.csv", sep = "")) %>%  as_tibble() %>% filter(market=="otc") 
+
+
+
+## Reddit data 
+
+# on Comments
+
+dat <- list.files(path=paste(basepath,"Reddit_data_WF/penny_and_canada_stocks/comments/", sep = ""), full.names = TRUE) %>% 
+  lapply(read_csv) 
+
+dat[[1]] <- mutate(dat[[1]],`Creation date` = as.Date(`Creation date`, '%d/%m/%y'))
+
+dat_cmts_penny_bind_in <- dat %>%  bind_rows(.id = "Ident") %>% select(-awards)
+
+# on Submissions
+
+dat_sub <- list.files(path=paste(basepath,"Reddit_data_WF/penny_and_canada_stocks/submission/", sep = ""), full.names = TRUE) %>% lapply(read_csv) 
+
+dat_sub[[1]] <- mutate(dat_sub[[1]],`Creation date` = as.Date(`Creation date`, '%d/%m/%y')) 
+
+dat_subm_penny_bind_in <- dat_sub %>%  bind_rows(.id = "Ident") 
+
+
+
+## Discord data
+
+# on Comments
+
+dat_disc <- list.files(path=paste(basepath,"Discrod_data_WF/", sep = ""), full.names = TRUE) %>% lapply(read_csv) 
+
+# Date format from discord: 26-May-20 06:05 PM 
+
+for (x in 1:length(dat_disc)){
+dat_disc[[x]] <- mutate(dat_disc[[x]], Date = as.Date(Date, tryFormats = c("%d-%h-%y","%d-%b-%y","%-d-%h-%y","%-d-%b-%y")))
+}
+
+dat_disc_penny_bind_in <- dat_disc %>%  bind_rows(.id = "Ident") %>%  select(-Attachments, -Reactions)
+
+```
+
+
+```{r initalClean_Tickers, echo=FALSE, include=FALSE}
+
+## Clean tickers
+
+# Checks if Ticker symbols are matching common words
+
+is.word  <- function(x){
+  
+  if (x %in% c(toupper(amplification.words), toupper(Fry_1000),toupper(abbreviations),
+               toupper(preposition),toupper(action.verbs),toupper(positive.words),
+               toupper(negation.words),toupper(function.words),
+               toupper(adverb), "YOLO", "DD", "MOON", "HOLD", "POST",
+               "FOMO", "PUMP", "NICE", "BEST","LMAO", "BRO","DUDE","PR",
+               "ElSE","EVER","HIGH","LOW","ID","APP","CASH","WAYS","CAPS","DGEN","FOMC","CLIFF","AMEN","CAGR","FOMC")){
+    return("Cleaned")
+     
+  }else{return(x)}
+} 
+
+
+
+clean_ticker <- sapply(df_tickers$ticker, is.word)
+
+df_tickers$ticker <- clean_ticker
+
+df_tickers <- df_tickers %>% as_tibble() %>% filter(ticker != "Cleaned") 
+
+write_excel_csv2(df_tickers, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/cleaned_otc_tickers.csv")
+
+
+```
+
+
+```{r global_settings, echo=FALSE}
+
+
+It_lookup_count = 999000000000
+
+df <- df_tickers %>% select(ticker,name)
+
+long_tk_vc <- unname(unlist(df)) %>%  as.vector()
+
+sterm <- paste(long_tk_vc, collapse = "|")
+
+### cut of date for data min. 2018,01,01 max 2022,11,01 
+
+min_date <- '2019-01-01'
+max_date <- '2022-11-01'
+
+```
+
+
+```{r initalClean, echo=FALSE, include=FALSE}
+
+dat_cmts_cl <- dat_cmts_penny_bind_in %>% dplyr::rename(Date = `Creation date`, Body=`comment body`) %>%  
+  na.omit() %>% 
+  filter(Date >= as.Date(min_date) & Date <= as.Date(max_date))
+
+dat_subm_cl <- dat_subm_penny_bind_in %>% dplyr::rename(Date = `Creation date`, Body=selftext) %>%  
+  na.omit() %>% 
+  filter(Date >= as.Date(min_date) & Date <= as.Date(max_date))
+
+dat_disc_cl <- dat_disc_penny_bind_in %>% dplyr::rename(Body=Content) %>%  
+  na.omit() %>% 
+  filter(Date >= as.Date(min_date) & Date <= as.Date(max_date))
+
+```
+
+## Create OTC related data subset 
+
+Limit Reddit comments to comments which mention OTC stocks or are belonging to a Reddit submission which mentions OTC stocks in the body text and title. 
+
+### Find submissions with text included 
+
+To prevent duplication created an anti-join, so that submission with the headline text is not including submission with a body match.
+
+```{r data_submissions, echo=FALSE}
+
+# Submission headers 
+
+df_subn_title_otc <- stringi::stri_detect_regex(dat_subm_cl$title, pattern = sterm) 
+
+df_sub_title_otc <- dat_subm_cl %>%  filter(df_subn_title_otc) 
+
+
+# Limits the corpus to documents which explicitly mention the ticker 
+
+df_subn_otc <- stringi::stri_detect_regex(dat_subm_cl$Body, pattern = sterm) 
+
+df_sub_otc <- dat_subm_cl %>%  filter(df_subn_otc) 
+
+df_sub_otc <- anti_join(df_sub_otc, df_sub_title_otc, by = "id") 
+
+
+# Export the csv's 
+
+readr::write_excel_csv(df_sub_title_otc, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/submissions_title.csv")
+
+readr::write_excel_csv(df_sub_otc, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/submissions.csv")
+
+```
+
+## Find data which is relevant due to its connectedness with the the OTC ticker symbols.
+
+```{r data_comments, echo=FALSE}
+
+# Find comments associated 
+
+# Clean t3 from link ID to parent ID 
+
+dat_cmts_cl_ <- dat_cmts_cl %>% separate(link_id, sep='[_]',into=c("ID-prefix","link_id_body"))
+
+no_dupl_df_submissions = anti_join(df_sub_title_otc, df_sub_otc, by = c("id" = "id"))
+
+associated_comments_title <- dplyr::semi_join(dat_cmts_cl_, no_dupl_df_submissions, by = c("link_id_body" = "id"))
+
+associated_comments_body <- dplyr::semi_join(dat_cmts_cl_, df_sub_title_otc, by = c("link_id_body" = "id"))
+
+associated_comments <- bind_rows(associated_comments_title, associated_comments_body)
+
+# Export relevant data
+
+readr::write_excel_csv(associated_comments, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/associated_comments.csv")
+
+associated_comments %>%  head() 
+```
+
+### Reddit comments
+
+Inspect comments unrelated to the ones associated with specific submissions, this is to catch also sentiment in more general threads. To prevent duplication created an anti-join, so that general comments are not including associated comments (to exclude the ones already obtained because of their belonging to a submission).  
+
+```{r data_comments_general, echo=FALSE}
+
+# General comments (un linked to submissions)
+
+df_cmtsn_otc<- stringi::stri_detect_regex(dat_cmts_cl$Body, pattern = sterm) #max_count = It_lookup_count 
+
+dat_cmts_otc <- dat_cmts_cl %>%  filter(df_cmtsn_otc) 
+
+dat_cmts_otc %>%  head()
+
+dat_cmts_otc <- anti_join(dat_cmts_otc, associated_comments, by = "ID")
+
+readr::write_excel_csv(dat_cmts_otc, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/general_comments.csv")
+
+```
+
+Limit discord comments to comments directly mentioning OTC Ticker symbols or names of OTC Companies associated with Tickers. 
+
+```{r data_discord, echo=FALSE}
+
+# Filter only for discord comments directly mentioning tickers 
+
+df_discordn_otc <- stringi::stri_detect_regex(dat_disc_cl$Body, pattern = sterm) #max_count = It_lookup_count 
+
+df_discord_otc <- dat_disc_cl %>%  filter(df_discordn_otc) 
+
+# Export relevant data 
+
+readr::write_excel_csv(df_discord_otc, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/discord_comments.csv")
+
+df_discord_otc %>% head()
+
+```
+
+### Visualize Frequency of Stock mentioning in the different sources
+
+```{r new_visulaisations, echo=FALSE}
+
+
+
+df_sub_otc %>%  ggplot() + geom_freqpoly(aes(x=Date),bins = 200) +
+  theme_ipsum(grid="Y", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  ggtitle("Reddit submissions referencing OTC symbols in Body Text")
+
+  ggsave("Reddit submissions referencing OTC symbols in Body Text.png", device = "png")
+
+
+df_sub_title_otc %>% ggplot() + geom_freqpoly(aes(x=Date),bins = 200) +
+  theme_ipsum(grid="Y", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  ggtitle("Reddit submissions referencing OTC symbols in Headline Text")
+
+  ggsave("Reddit submissions referencing OTC symbols in Headline Text.png", device = "png")
+
+associated_comments %>% ggplot() + geom_freqpoly(aes(x=Date),bins = 200) +
+  theme_ipsum(grid="Y", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  ggtitle("Reddit comments associated with submissions")
+
+  ggsave("Reddit comments associated with submissions.png", device = "png")
+
+dat_cmts_otc %>%  ggplot() + geom_freqpoly(aes(x=Date),bins = 200) +
+  theme_ipsum(grid="Y", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  ggtitle("Reddit comments referencing OTC symbols in Body Text")
+
+  ggsave("Reddit comments referencing OTC symbols in Body Text.png", device = "png")
+
+df_discord_otc %>%  ggplot() + geom_freqpoly(aes(x=Date),bins = 200) + 
+  theme_ipsum(grid="Y", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  ggtitle("Discord comments referencing OTC symbols in Body Text")
+
+  ggsave("Discord comments referencing OTC symbols in Body Text.png", device = "png")
+
+
+```
+
+## Use tidytext for efficient word frequency 
+
+From this sources a comparison is created to see which tickers are mentioned how often in which sources. From this most frequent mentioned tickers we use a subset of chosen tickers for which we can find enough data points in all mediums: Reddit submissions, comments and discord comments. 
+
+```{r reddit frequency otc, echo=FALSE}
+
+
+# Label words which are relevant and filter the rest - SUBMISSION BODY REDDIT
+
+df_sub_tokened <- df_sub_otc %>% unnest_tokens(word, input = Body, token = "words",to_lower = FALSE) 
+
+freq_df_sub <- df_sub_tokened %>% dplyr::count(word)
+
+removed_non_tk_words <- stringi::stri_detect_regex(freq_df_sub$word, pattern = sterm)  #Probably change with %in% 
+
+freq_df_sub_match <- freq_df_sub %>%  filter(removed_non_tk_words) 
+
+freq_df_sub_match  %>%  arrange(desc(n))
+
+
+
+# Label words which are relevant and filter the rest - SUBMISSION HEADLINE REDDIT
+
+df_sub_title_tokened <- df_sub_title_otc %>% unnest_tokens(word, input = title, token = "words",to_lower = FALSE) 
+
+freq_df_sub_title <- df_sub_title_tokened %>% dplyr::count(word)
+
+removed_non_tk_words <- stringi::stri_detect_regex(freq_df_sub_title$word, pattern = sterm)  #Probably change with %in% 
+
+freq_df_title_sub_match <- freq_df_sub_title %>%  filter(removed_non_tk_words) 
+
+freq_df_title_sub_match  %>%  arrange(desc(n))
+
+
+
+# Label words which are relevant and filter the rest - COMMENTS REDDIT
+
+ass_comments_reddit <- associated_comments %>% unite("link_id_pre",c(`ID-prefix`, link_id_body), sep = "_", remove = FALSE) 
+
+df_comments_tokened_ex <- dat_cmts_otc %>%  anti_join(ass_comments_reddit, by='ID') 
+
+df_comments_tokened <- df_comments_tokened_ex %>% unnest_tokens(word, input = Body, token = "words",to_lower = FALSE) 
+
+freq_df_cmts <- df_comments_tokened %>% dplyr::count(word)
+
+removed_non_tk_words <- stringi::stri_detect_regex(freq_df_cmts$word, pattern = sterm)  
+
+freq_df_cmts_match <- freq_df_cmts %>%  filter(removed_non_tk_words) 
+
+freq_df_cmts_match  %>%  arrange(desc(n))
+
+
+
+
+
+# Label comments which are associated to posts - COMMENTS REDDIT ASSOCIATED
+
+df_ass_comments_tokened <- associated_comments %>% unnest_tokens(word, input = Body, token = "words",to_lower = FALSE) 
+
+freq_df_ass_cmts <- df_ass_comments_tokened %>% dplyr::count(word)
+
+removed_non_tk_words <- stringi::stri_detect_regex(freq_df_ass_cmts$word, pattern = sterm)  #Probably echange with %in% 
+
+freq_df_ass_cmts_match <- freq_df_ass_cmts %>%  filter(removed_non_tk_words) 
+
+freq_df_ass_cmts_match  %>%  arrange(desc(n))
+
+```
+
+Searchers all discord comments which mention one of the tickers explicitly.
+
+```{r discord frequency, echo=FALSE}
+
+
+# Label words which are relevant and filter the rest 
+
+
+df_discord_tokened <- df_discord_otc %>% unnest_tokens(word, input = Body, token = "words",to_lower = FALSE) 
+
+freq_df_discord <- df_discord_tokened %>% dplyr::count(word)
+
+removed_non_tk_words <- stringi::stri_detect_regex(freq_df_discord$word, pattern = sterm)  
+
+freq_df_discord_match <- freq_df_discord %>%  filter(removed_non_tk_words) %>%  arrange(desc(n)) %>% head(n=30)
+
+```
+
+To obtain overall frequency we merge all the data and sort it for the sum of entries.   
+
+```{r comparison, echo=FALSE}
+
+# Bin together to find suitable overlaps 
+
+
+# freq_comp <- bind_cols(freq_df_sub_match,freq_df_cmts_match,freq_df_discord_match, .name_repair = "unique")
+
+j <- full_join(freq_df_sub_match, freq_df_title_sub_match, by = c("word"="word"))
+
+j1 <- full_join(j,freq_df_cmts_match, by = c("word"="word"))
+
+j2 <- full_join(j1,freq_df_ass_cmts_match, by = c("word"="word"))
+
+j3 <- full_join(j2,freq_df_discord_match, by = c("word"="word"))
+
+
+
+clen <- j3 %>% replace(is.na(.), 0) 
+
+colnames(clen) <- c("Ticker","Submission_bodies","Submissions_headlines","Comments","Associated_comments","Discord_comments")
+
+clen <- clen %>% mutate(sum = Comments + Associated_comments + Discord_comments) %>%  arrange(desc(sum)) 
+
+
+# Clean rows which have missing data in terms of comments, either associated or general  
+
+cl_df_fr <- clen %>%  filter(rowSums(. == 0) <=2) %>%  head(n = 10)
+
+readr::write_excel_csv(cl_df_fr, file = "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/freq.csv")
+
+cl_df_fr 
+
+```
+
