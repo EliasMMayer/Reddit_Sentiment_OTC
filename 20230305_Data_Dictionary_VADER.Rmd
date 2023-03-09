@@ -19,7 +19,6 @@ library("tidymodels")
 
 library("purrr")
 
-
 library ("plyr")
 library("stopwords")
 library("readr")
@@ -28,7 +27,6 @@ library("quanteda.textstats")
 library("quanteda.textplots")
 
 library("quanteda")
-library("LSX") 
 
 # For stock symbols
 library("TTR")
@@ -45,15 +43,6 @@ library("tseries")
 library("forecast")
 library("urca")
 
-# font_import() this is required for chosen clean theme 
-
-#library(extrafont) 
-
-#loadfonts(device = "win")
-
-#extrafont::font_import()
-
-#detach("package:hrbrthemes", unload=TRUE)
 
 library("ragg")
 library("hrbrthemes")
@@ -76,337 +65,32 @@ library("VLTimeCausality")
 library("zoo")
 library("cowplot")
 
+library("rjson")
+library("vader")
+
 ```
 
 ##  Load data and preperation
 
-```{r TrainLSS, echo=FALSE}
+Source: https://www.r-bloggers.com/2020/10/sentiment-analysis-in-r-with-custom-lexicon-dictionary-using-tidytext/
 
-
-# Adjust path to Folder Struct 
-
-basePathC <- 'C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data'
-
-# Paths for Ticker data
-
-basepath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/"
-  
-tickerBasePath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Stock_data_WF/"
-
-
-# Combiner for graph 
-
-# Source: https://stackoverflow.com/questions/29864318/combination-of-named-vectors 
-
-Combiner <- function(vec1, vec2, vecOut = TRUE) {
-  temp <- unique(rbind(data.frame(as.table(vec1)),
-                       data.frame(as.table(vec2))))
-  if (isTRUE(vecOut)) setNames(temp$Freq, temp$Var1)
-  else temp
-}
-
-#Train the LSS with the whole corpus available (training) of all OTC tickers to pick up as much language wise as possible 
-
-whole_gen_cmts_language_df <-  read.csv(paste(basePathC, "/reddit_comments/general_comments.csv", sep = ""))
-
-whole_ass_cmts_language_df <-  read.csv(paste(basePathC, "/reddit_comments/associated_comments.csv", sep = ""))
-
-whole_dis_cmts_language_df <-  read.csv(paste(basePathC, "/discord_comments/discord_comments.csv", sep = ""))
-
-
-# Time split sufficient 
-
-whole_gen_cmts_language_df_cl <- whole_gen_cmts_language_df %>% 
-  separate(col=link_id,sep="_",into = c("ID.prefix","link_id_body"))
-
-whole_dis_cmts_language_df_cl <- whole_dis_cmts_language_df %>% 
-  dplyr::rename(ID = AuthorID) %>% mutate(Score=1, parentID="Null", ID.prefix = "Null", link_id_body = "Null")
-
-# Append all comments into one data frame (general ,associated and discord)
-
-bind_cmts <- rbind(whole_gen_cmts_language_df_cl,whole_ass_cmts_language_df,whole_dis_cmts_language_df_cl) %>% 
-  mutate(DateX = as.Date(Date)) %>% dplyr::select(-Date) %>% dplyr::rename(Date = DateX) %>% distinct()
-
-
-# Create a corpus combined
-
-corp <- corpus(bind_cmts, text_field = "Body")
-
-summary(docvars(corp))
-
-cutofDateTraining <- "2020-03-01"
-
-sob <- corpus_subset(corp, Date < as.Date(cutofDateTraining))  # Sub-setting for training data 
-
-sum_tok <- summary(sob, n = Inf)
-
-# Preperation, Source: https://tutorials.quanteda.io/machine-learning/lss/
-
-ggplot(data = sum_tok, aes(x = Date, y = Sentences)) +
-  geom_area( fill="#69b3a2", alpha=0.4) +
-  geom_line(color="#69b3a2", size=0.02) +
-  coord_cartesian(ylim=c(0,50))  +  
-  theme_ipsum(grid="Y", base_family  = "Roboto Condensed", plot_title_size = 12) 
-
-toks_sent <- sob %>% 
-  corpus_reshape("sentence") %>% 
-  tokens(remove_punct = TRUE) %>% 
-  tokens_remove(stopwords("en"), padding = TRUE)
-
-dfmt_sent <- toks_sent %>% 
-  dfm(remove_padding = TRUE) %>%
-  dfm_select("^\\p{L}+$", valuetype = "regex", min_nchar = 2) %>% 
-  dfm_trim(min_termfreq = 10)
-
-textplot_wordcloud(dfmt_sent, min_count = 6, random_order = FALSE, rotation = 0.25, max_words = 100)
-
-
-```
-
-
-
-```{r SeedwordsAFE, echo=FALSE}
-
-# Function which filters and gives the AFE stat for given data 
-
-vectorCoOccurence <- function(DATA) {
-
-    dat_tst <- DATA
-    
-    corb <- quanteda::corpus(dat_tst, text_field = "text") %>% tokens(remove_punct = TRUE)  %>% 
-      dfm(remove_padding = TRUE) 
-    
-    dfm_labels <- dat_tst$category %>% tokens(remove_punct = TRUE) %>%  dfm(remove_padding = TRUE) 
-    
-    # create co-occurrence vectors
-    afe_stat <- newsmap::afe(corb, dfm_labels, smooth = 1)
-
-    return(afe_stat)
-}
-
-```
-
-# Classify for AFE
-
-```{r SeedwordsAFEAddition, echo=FALSE, warning=FALSE}
-
-# Potential seed words from frequency selected after human double check
-
-positive_nw_iter <- c( "good", "bought","right","pump",
-                       "nice","holding","great", "gain", "buy", 
-                       "upvote", "strong", "super", "call", 
-                       "moon", "love","positive","win")
-
-negative_nw_iter <- c( "bad","short", "sold","wrong","dump",
-                       "shit","selling","concerns", "drop","sell", 
-                       "downvote", "spam", "fuck", "scam",
-                       "put","panic","negative", "loss")
-
-pnsSeedPotential<- c(positive_nw_iter,negative_nw_iter)
-
-# Array for results 
-
-arrayResults <- array(dim = c(length(pnsSeedPotential),2)) 
-
-colnames(arrayResults) <- c("+ Seedword", "AFE")
-
-c = 1
-
-# Start words
-
-wordName = c("positive","negative")
-
-words <- list()
-
-words$positive <-  c("good")
-
-words$negative <-  c("bad")
-
-names(words) =  wordName
-
-data_inv_dictonary_sentiment <- dictionary(words)
-
-# Iterate
-
-for (word in pnsSeedPotential){
-  
-  #### Add a word to old words and calculate AFE (positive and negative)
-  
-  if (word == "good"){
-    pnsSeed_insert <- "good"
-  }else{
-    pnsSeed_insert <- c(pnsSeed_insert, word) 
-  }
-  
-  #### CONSTUCT DICTIONARY
-  
-  if (c < length(positive_nw_iter)){
-   words$positive <- c(words$positive, word) 
-  }else{
-   words$negative <- c(words$negative, word)  
-  }
-  
-  #### Construct new dictionary 
-  
-  data_inv_dictonary_sentiment <- dictionary(words)
-  
-  
-  #### PREDICTION MODEL  
-  
-  model_lss <- textmodel_lss(dfmt_sent, as.seedwords(data_inv_dictonary_sentiment), k = 300, 
-                             auto_weight = TRUE, include_data = TRUE, cache = FALSE) 
-
-  dfm_grouped <- dfm_group(model_lss$data) #reconstruct org. paragraph
-  
-  dat_tst <- docvars(dfm_grouped) 
-
-  dat_tst$fit <- predict(model_lss, newdata = dfm_grouped, min_n =2, rescale = FALSE)
-
-  dat_tst$text <- as.character(sob) # Get text from corpus for comparability
-
-  dat_tst <- dat_tst %>% mutate(category = case_when(fit >= 0.0001 ~ "positive",
-                        fit <= -0.0001  ~ "negative",
-                        fit < 0.0001 & fit > -0.0001  ~ "neutral"))
-    
-  
-  #### CALCULATE AFE 
-  
-  fcm_stat_afe <- vectorCoOccurence(dat_tst) 
-  
-  
-  #### Fill Array
-  
-  arrayResults[c,1] = word
-    
-  arrayResults[c,2] = format(fcm_stat_afe, scientific = FALSE)
-  
-  c = c + 1
-  
-}
-```
-
-
-```{r SeedwordsInspection, echo=FALSE}
-
-
-suR <- arrayResults %>%  as_tibble() %>% mutate(`AFE diff` = as.numeric(`AFE`)) %>% 
-  mutate(afe_change = (`AFE diff`-lag(`AFE diff`))/ lag(`AFE diff`)) %>%  
-  mutate(colHelp = ifelse(afe_change>0, 1, 0))
-
-# lock in factor level order
-
-suR$`+ Seedword` <- factor(suR$`+ Seedword`, levels = suR$`+ Seedword`)
-
-suR %>% ggplot(aes(y= afe_change,x= `+ Seedword`, fill = as.factor(colHelp))) + geom_col() +  
-  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 12) + 
-    theme(axis.text.x = element_text(angle = 90)) + scale_fill_manual(values=c("lightblue", "grey")) +
-  theme(legend.position="none")
-
-```
-
-
-Final seed word selection and model training. Inspection of AFE enhancing seedwords. 
-
-```{r finalseeds, echo=FALSE}
-
-# Inspect the problematic seed words - AFE based 
-
-AFE_problematic_df <- suR %>%  filter(afe_change  > 0.000)
-
-AFE_problematic_df$`+ Seedword` %>%  as_tibble() 
-
-# Keywords in context kwic 
-
-# for (element in 1:length(AFE_problematic_df$`+ Seedword`)){
-# 
-# kw_main_txt <- kwic(sob, pattern = as.character(AFE_problematic_df[[element,1]]), window = 10)
-# 
-# head(kw_main_txt, 20) %>%  View()  
-# 
-# #invisible(readline(prompt="Press [enter] to continue"))
-# 
-# }
-
-```
-
-# Final selection
-
-```{r finalseedsMerge, echo=FALSE}
-
-AFE_red_df <- suR %>% filter(afe_change  <= 0.000)
-
-seedwords <- AFE_red_df$`+ Seedword`
-
-# Sort for positive and negative words 
-
-seedAFE <- seedwords %>% as_tibble()
-
-# Print
-
-seedAFE
-
-# Delete rows with unclear or possible unclear potential seedwords 
-
-SeedwordsAFEbased <- seedAFE %>% filter(!value %in% c("call","right", "put", "love", "positive")) 
-
-# Add seedword which increased AFE after thorough inspection of KWIC 
-
-postiveAFESeed <- SeedwordsAFEbased[1:7,]
-
-negativeAFESeed <- anti_join(SeedwordsAFEbased,postiveAFESeed, by = 'value')
-
-
-
-#Construct dictionary 
-
-words$positive <-  as.character(postiveAFESeed$value)
-
-words$negative <-  as.character(negativeAFESeed$value)
-
-data_afe_dictonary_sentiment <- quanteda::dictionary(words)
-
-data_afe_dictonary_sentiment
-
-
-```
-
-
-
-```{r Predictor, echo=FALSE}
-
-# train model 
-
-model_afe_lss <- textmodel_lss(dfmt_sent, as.seedwords(data_afe_dictonary_sentiment), k = 300, 
-                             auto_weight = TRUE, include_data = TRUE, cache = TRUE) 
-
-
-termP <- head(coef(model_afe_lss), 8) # most positive words
-
-termN <- tail(coef(model_afe_lss), 8) # most negative words
-
-comb <- Combiner(termP, termN)
-
-
-# Text plot to see the polarity score 
-
-textplot_terms(model_afe_lss, highlighted = names(comb))
-
-
-```
-
-
-
-
-```{r batchEval, echo=FALSE, fig.width=14, fig.height=12}
+```{r PathsandPrep, echo=FALSE,}
 
 # Helper functions 
 
 `%ni%` <- Negate(`%in%`)
 
+# Adjust path to Folder Struct 
+
+basepath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/"
+  
+tickerBasePath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Stock_data_WF/"
+
 # Defined tickers for inspection 
 
 tickers <- c("TLSS", "EEENF","UAPC","PASO","OZSC","ILUS", "BBRW", "RXMD","DECN","HCMC")
 
+cutofDateTraining <- "2020-03-01"
 endCutOfDate = "2023-01-01"
 
 # Save data points 
@@ -417,7 +101,14 @@ colnames(arrayForParameters) <- c("name", "datapoints in ti", "BICDiffRatio", "V
                                   "Granger Cause sentiment - course","p value 1",
                                   "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2")
 
-# Data load and execution 
+
+
+
+```
+
+```{r batchEvalActive, echo=FALSE, fig.width=14, fig.height=12}
+
+# Looping through Tickers
 
 count = 1 # for array
 
@@ -439,8 +130,8 @@ for (tick in tickers){
   ticker_df_day <- read.csv(string_path_tickers)
   
   ticker_df_day <- ticker_df_day %>%  
-    filter(Date >= as.Date(cutofDateTraining) & Date <= as.Date(endCutOfDate)) %>% 
-    filter(Close != 'null' & Adj.Close!= 'null' ) 
+    dplyr::filter(Date >= as.Date(cutofDateTraining) & Date <= as.Date(endCutOfDate)) %>% 
+    dplyr::filter(Close != 'null' & Adj.Close!= 'null' ) 
   
   # Define strings 
   
@@ -496,29 +187,37 @@ for (tick in tickers){
   
   sob_it <- corpus_subset(corp_it, Date >= as.Date(cutofDateTraining) & Date <= as.Date(endCutOfDate))  
   
-  toks_sent_it <- sob_it %>% 
-    corpus_reshape("sentence") %>% 
-    tokens(remove_punct = TRUE) %>% 
-    tokens_remove(stopwords("en"), padding = TRUE)
   
-  dfmt_sent_it <- toks_sent_it %>% 
-    dfm(remove_padding = TRUE) %>%
-    dfm_select("^\\p{L}+$", valuetype = "regex", min_nchar = 2) %>% 
-    dfm_trim(min_termfreq = 5)
+  # sentiment estimation - use previous defined custom dictionary 
+  
+  textvec <- quanteda::(sob_it, use.names = TRUE)
+  
+  dfm_ntusd <- vader_df(texts)(sob_it, select = tokVec)
   
   ########################################____Prediction___###################################################
+  
+  # weight --> NTUSD FIN
+  dfm_ntsud_weighted <- dfm_ntusd %>%
+      dfm_weight(scheme = "prop") %>%   # normalize 
+      dfm_weight(weights = sentVec)
 
-  dfmt_tst_it <- dfm_group(dfmt_sent_it)   
+  dfmt_tst_it <- dfm_group(dfm_ntsud_weighted)   
 
   dat_tst_it <- docvars(dfmt_tst_it) 
-
   
-  # Prediction
-
-  dat_tst_it$fit <- predict(model_afe_lss, newdata = dfmt_tst_it, min_n=1, rescale = FALSE)  
+  # summarize 
   
+  rs <- rowSums(dfm_ntsud_weighted)
+  
+  tab <- as_tibble(as.list(rs)) %>%  pivot_longer(everything())
+ 
+  dat_tst_it$fit <- tab$value
+    
+  print(dat_tst_it)   
+  
+  # -----------------
+
   arrayForParameters[count,2] <- length(dat_tst_it$ID) 
-  
   
   # Defines time span based on sentiment data available in time frame
 
@@ -534,21 +233,15 @@ for (tick in tickers){
   
   ########################################____Weight___#######################################################
   
-  # Weighting and scores
-  
-  # Set score to 1 which indicated no down vote for all the comments from Discord
+  # Set score to 0.5 which indicated no down vote for all the comments from Discord
   
   dat_join <- dat_join  %>% dplyr::mutate(Score = replace_na(Score,0)) %>%  
     dplyr::mutate(fit = replace_na(fit, 0)) %>% 
     dplyr::rename(Date = date) %>% dplyr::mutate(Score=ifelse(Score==0,0.5,Score))
   
-  
-  # Weight Reddit scores - please mind score weights are not utilized 
-  
-  # https://www.desmos.com/calculator/uwgcqjafuh?lang=de 
-
   dat_tst_it_weight <- dat_join %>% dplyr::mutate(fit = fit * 1000)  %>% 
-    dplyr::mutate(multiplierFromScore  =  2/(2 + 0.05*exp(1)^(-0.9*Score)))   #exclude or dampen scores when downvoted to much 
+    dplyr::mutate(multiplierFromScore  =  2/(2 + 0.05*exp(1)^(-0.9*Score)))   
+  # exclude or dampen scores when downvoted to much 
 
   # Sum 
   mean_df <- dat_tst_it_weight %>% dplyr::group_by(Date) %>%  

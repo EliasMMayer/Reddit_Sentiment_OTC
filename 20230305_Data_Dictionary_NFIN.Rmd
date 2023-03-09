@@ -1,0 +1,415 @@
+---
+title: "LSS"
+author: "Elias Mayer"
+date: "2022-10-29"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r libs, echo=FALSE, warning=FALSE, include=FALSE}
+
+library("ggpmisc")
+
+library("tidyverse")
+library("tidytext")
+library("tokenizers")
+library("tidymodels")
+
+library("purrr")
+
+library ("plyr")
+library("stopwords")
+library("readr")
+library("quanteda")
+library("quanteda.textstats")
+library("quanteda.textplots")
+
+library("quanteda")
+
+# For stock symbols
+library("TTR")
+
+# English lexicons not sentiment
+library("qdapDictionaries")
+
+# Head tail
+library("psych")
+
+# imputes if needed
+library("imputeTS")
+library("tseries")
+library("forecast")
+library("urca")
+
+
+library("ragg")
+library("hrbrthemes")
+
+hrbrthemes::import_roboto_condensed()
+
+library("rlist")
+library("DescTools")
+library("newsmap")
+
+library("tsibble")
+
+# for ts conversions
+library("tsbox")
+
+# variable lag granger
+library("VLTimeCausality")
+
+# TS and plotting
+library("zoo")
+library("cowplot")
+
+library("rjson")
+
+```
+
+##  Load data and preperation
+
+Source: https://www.r-bloggers.com/2020/10/sentiment-analysis-in-r-with-custom-lexicon-dictionary-using-tidytext/
+
+```{r PathsandPrep, echo=FALSE,}
+
+# Helper functions 
+
+`%ni%` <- Negate(`%in%`)
+
+# Adjust path to Folder Struct 
+
+basepath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/"
+  
+tickerBasePath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Stock_data_WF/"
+
+# Defined tickers for inspection 
+
+tickers <- c("TLSS", "EEENF","UAPC","PASO","OZSC","ILUS", "BBRW", "RXMD","DECN","HCMC")
+
+cutofDateTraining <- "2020-03-01"
+endCutOfDate = "2023-01-01"
+
+# Save data points 
+
+arrayForParameters <- array(dim = c(length(tickers),9))
+
+colnames(arrayForParameters) <- c("name", "datapoints in ti", "BICDiffRatio", "VAR lag", 
+                                  "Granger Cause sentiment - course","p value 1",
+                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2")
+
+### Text
+
+j_words_pth <- file.path("dictionary/NTUSD-Fin/NTUSD_Fin_word_v1.0.json")
+
+json_data <- fromJSON(file = j_words_pth)
+
+# Data load and execution 
+
+tokns <- sapply(json_data, function(x) x[["token"]])
+sentm <- sapply(json_data, function(x) x[["market_sentiment"]])
+
+# Create named vector
+
+names(sentm) <- tokns
+
+### EMOJIS
+
+j_words_pth <- file.path("dictionary/NTUSD-Fin/NTUSD_Fin_emoji_v1.0.json")
+
+json_data <- fromJSON(file = j_words_pth)
+
+# Data load and execution 
+
+emojis <- sapply(json_data, function(x) x[["token"]])
+sentm_emoji <- sapply(json_data, function(x) x[["market_sentiment"]])
+
+# Create named vector
+
+names(sentm_emoji) <- emojis
+
+
+
+tokVec <- c(tokns, emojis)
+
+sentVec <- c(sentm_emoji, sentm)
+
+
+```
+
+```{r batchEvalActive, echo=FALSE, fig.width=14, fig.height=12}
+
+# Looping through Tickers
+
+count = 1 # for array
+
+
+for (tick in tickers){
+  
+  print(paste("Ticker symbol: ", tick))
+  
+  arrayForParameters[count,1] <- tick 
+  
+  # Prepare for user data
+  
+  string_path <- paste(basepath, tick,"/" ,sep="")
+  
+  # Get stock data
+  
+  string_path_tickers <- paste(tickerBasePath, tick,".csv" ,sep="")
+  
+  ticker_df_day <- read.csv(string_path_tickers)
+  
+  ticker_df_day <- ticker_df_day %>%  
+    dplyr::filter(Date >= as.Date(cutofDateTraining) & Date <= as.Date(endCutOfDate)) %>% 
+    dplyr::filter(Close != 'null' & Adj.Close!= 'null' ) 
+  
+  # Define strings 
+  
+  comments_general <- paste(string_path, "general_comments_score_",tick,"_added.csv" ,sep="")
+  
+  comments_assocaited <- paste(string_path, "associated_comments_score_",tick,"_added.csv" ,sep="")
+  
+  submissions_body <- paste(string_path, "submissions_",tick,"_body.csv" ,sep="")
+    
+  submissions_headline <- paste(string_path, "submissions_",tick,"_title.csv" ,sep="")
+  
+  discord_general <- paste(string_path, "discord_",tick,"_body.csv" ,sep="")
+
+  # Load ticker information
+  
+  comments_general_df <- read.csv(comments_general)
+  
+  comments_assocaited_df <- read.csv(comments_assocaited)
+  
+  submissions_body_df <- read.csv(submissions_body)
+  
+  submissions_headline_df <- read.csv(submissions_headline)
+  
+  discord_general_df <- read.csv(discord_general)
+  
+  ################################################ Prepare data for prediction model 
+  
+  # Append all comments into one data frame (general ,associated and discord)
+  
+  dsc_general_df <- discord_general_df %>% dplyr::rename(ID = AuthorID) %>% 
+    mutate(Score=0, parentID="Null", ID.prefix = "Null", link_id_body = "Null")
+  
+  # Check if structure like supposed to if not transform columns to be equally structured 
+  
+  if ("ID.prefix" %ni% colnames(comments_general_df)) {
+  comments_general_df <- comments_general_df %>% 
+    separate(col=link_id,sep="_",into = c("ID.prefix","link_id_body"))
+  }
+  
+  if ("ID.prefix" %ni% colnames(comments_assocaited_df))  {
+  comments_assocaited_df <- comments_assocaited_df %>% 
+    separate(col=link_id,sep="_",into = c("ID.prefix","link_id_body"))
+  }
+  
+  # Combine into one data frame 
+  
+  bind_cmts_it <- rbind(comments_general_df,comments_assocaited_df,dsc_general_df) %>% 
+    mutate(DateX = as.Date(Date)) %>% dplyr::select(-Date) %>% dplyr::rename(Date = DateX) %>% distinct()
+  
+  # Create a corpus and exclude training data 
+  
+  corp_it <- corpus(bind_cmts_it, text_field = "Body")
+  
+  sob_it <- corpus_subset(corp_it, Date >= as.Date(cutofDateTraining) & Date <= as.Date(endCutOfDate))  
+  
+  
+  # sentiment estimation - use previous defined custom dictionary 
+  
+  dfm_ntusd <- dfm(sob_it, select = tokVec)
+  
+  ########################################____Prediction___###################################################
+  
+  # weight --> NTUSD FIN
+  dfm_ntsud_weighted <- dfm_ntusd %>%
+      dfm_weight(scheme = "prop") %>%   # normalize 
+      dfm_weight(weights = sentVec)
+
+  dfmt_tst_it <- dfm_group(dfm_ntsud_weighted)   
+
+  dat_tst_it <- docvars(dfmt_tst_it) 
+  
+  # summarize 
+  
+  rs <- rowSums(dfm_ntsud_weighted)
+  
+  tab <- as_tibble(as.list(rs)) %>%  pivot_longer(everything())
+ 
+  dat_tst_it$fit <- tab$value
+    
+  print(dat_tst_it)   
+  
+  # -----------------
+
+  arrayForParameters[count,2] <- length(dat_tst_it$ID) 
+  
+  # Defines time span based on sentiment data available in time frame
+
+  s_date <- min(dat_tst_it$Date)
+  
+ if (s_date < cutofDateTraining) {s_date = cutofDateTraining}
+  
+  e_date <- max(dat_tst_it$Date)
+  
+  print(paste("reported range: start: ", s_date, ", end: ", e_date))
+  
+  dat_join <- dat_tst_it %>%  dplyr::mutate(date = Date) %>%  select(-Date)
+  
+  ########################################____Weight___#######################################################
+  
+  # Set score to 0.5 which indicated no down vote for all the comments from Discord
+  
+  dat_join <- dat_join  %>% dplyr::mutate(Score = replace_na(Score,0)) %>%  
+    dplyr::mutate(fit = replace_na(fit, 0)) %>% 
+    dplyr::rename(Date = date) %>% dplyr::mutate(Score=ifelse(Score==0,0.5,Score))
+  
+  dat_tst_it_weight <- dat_join %>% dplyr::mutate(fit = fit * 1000)  %>% 
+    dplyr::mutate(multiplierFromScore  =  2/(2 + 0.05*exp(1)^(-0.9*Score)))   
+  # exclude or dampen scores when downvoted to much 
+
+  # Sum 
+  mean_df <- dat_tst_it_weight %>% dplyr::group_by(Date) %>%  
+    dplyr::summarise(fit = sum(fit * multiplierFromScore)) %>% drop_na() 
+  
+  
+  # Combines to zoo ts object 
+  
+  # Creates an object which counts data points
+  
+  datPoints <- dat_tst_it %>% tibble() %>% 
+    filter(is.na(fit)==FALSE) %>% dplyr::group_by(Date) %>%  
+    dplyr::summarise(dP = count(Date))
+  
+  data_Points_Obtain_TS <- zoo(datPoints$dP$freq, datPoints$Date)
+  
+  # Creates an object for predicted values over time
+  
+  dat_sm_it_ts <- zoo(mean_df$fit, mean_df$Date) 
+  
+  mean_ts <- dat_sm_it_ts
+  
+
+  ### FINANCE DATA
+  
+  #############################################################################################
+  
+  # Simple adjusted Closing day from yahoo finance 
+  
+  ticker_df_day$closePerc <- ticker_df_day$Adj.Close 
+  
+  ticker_df_day <- ticker_df_day %>% 
+    mutate(Date = as.Date(Date)) %>% 
+    filter(Date >= s_date & Date <= e_date) %>%  
+    as_tibble() %>%  
+    dplyr::mutate(across(where(is.character), as.double))
+  
+  # TS 
+
+  ticker_df_day_ts <- zoo(ticker_df_day$closePerc, ticker_df_day$Date) 
+  
+  ticker_df_day_ts <- na_replace(ticker_df_day_ts, fill=0) # zero course change for NA or weekend days  
+  
+  
+  ### Comparison plots 
+  
+  #############################################################################################
+  
+  # Bring for visualization to same units area - normalize 
+  
+  tsb_app <- merge(ticker_df_day_ts, mean_ts) 
+  
+  tsb_app <- na_replace(tsb_app, fill=0) 
+
+  # Sentiment
+
+  p <- ts_ggplot (mean_ts) +  
+  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  theme(axis.text.x = element_text(angle = 90)) + 
+  ggtitle(paste(tick, "Sentiment change")) + scale_fill_discrete(name = "Plots") + 
+  scale_color_manual(values = c("lightblue", "orange")) + 
+  stat_peaks(geom = "text", colour = "blue", angle = 90, hjust = -0.1, x.label.fmt = "%d.%m", span = 21) +
+  stat_peaks(geom = "rug", colour = "blue", sides = "b") +
+  expand_limits(y = max(mean_ts) + max(mean_ts)*0.30+ min(mean_ts)*-0.30)
+
+  # Data points  
+  
+  p2 <- ts_ggplot (data_Points_Obtain_TS)+  
+  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  theme(axis.text.x = element_text(angle = 90)) + 
+  ggtitle(paste(tick, "Data points (base for sentiment estimation)")) + scale_fill_discrete(name = "Plots") + 
+  scale_color_manual(values = c("lightblue", "orange")) + 
+  stat_peaks(geom = "text", colour = "black", angle = 90, hjust = -0.1, x.label.fmt = "%d.%m", span = 21) +
+  stat_peaks(geom = "rug", colour = "black", sides = "b") +
+  expand_limits(y = max(data_Points_Obtain_TS) + max(data_Points_Obtain_TS)*0.20)
+  
+  # Course 
+
+  p3 <- ts_ggplot (ticker_df_day_ts) +  
+  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 12) + 
+  theme(axis.text.x = element_text(angle = 90)) + 
+  ggtitle(paste(tick, "closing courses")) + scale_fill_discrete(name = "Plots") + 
+  scale_color_manual(values = c("lightblue", "orange")) + 
+  stat_peaks(geom = "text", colour = "blue", angle = 90, ignore_threshold= max(ticker_df_day_ts)/5,
+             hjust = -0.1, x.label.fmt = "%d.%m", span = 21) +
+  stat_peaks(geom = "rug", colour = "blue", sides = "b") +
+  expand_limits(y = max(ticker_df_day_ts) + max(ticker_df_day_ts)*0.20)
+  
+  pa <- plot_grid(p, p2, p3, align="v", ncol = 1)
+  
+  print(pa)
+  
+  ##########################__Granger__################################################################
+  
+  print("Granger correlation tests")
+  print("closing course with sentiment")
+  
+  # First dependent second independent 
+  
+  tsb_app # SPLIT TIME SERIES 
+  
+  tb_sent <- tsb_app[,2]
+  
+  tb_course <- tsb_app[,1]
+  
+  
+  
+  # Granger function 
+  
+  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_sent, Y= tb_course, maxLag = 5, autoLagflag = TRUE)
+  
+  arrayForParameters[count,3] <- tstRes$BICDiffRatio 
+  
+  arrayForParameters[count,4] <- tstRes$maxLag
+  
+  arrayForParameters[count,5] <- tstRes$XgCsY_ftest
+  
+  arrayForParameters[count,6] <- tstRes$p.val
+  
+  
+  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_course, Y= tb_sent, maxLag = 5, autoLagflag = TRUE)
+  
+  arrayForParameters[count,7] <- tstRes$XgCsY_ftest
+
+  arrayForParameters[count,8] <- tstRes$p.val
+  
+  arrayForParameters[count,9] <- tstRes$BICDiffRatio
+  
+  print("----------------------------------------------------------------------")
+  
+  count = count + 1
+  
+}
+
+arr <- arrayForParameters %>%  as_tibble()
+
+arr
+
+```
+
