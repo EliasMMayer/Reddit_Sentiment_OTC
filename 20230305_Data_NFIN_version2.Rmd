@@ -70,8 +70,6 @@ library("tsibble")
 # for ts conversions
 library("tsbox")
 
-# variable lag granger
-library("VLTimeCausality")
 
 # TS and plotting
 library("zoo")
@@ -84,6 +82,10 @@ library("timetk")
 
 library("rjson")
 library("SentimentAnalysis")
+library("forecast")
+
+# variable lag granger
+library("VLTimeCausality")
 
 ```
 
@@ -180,15 +182,15 @@ endCutOfDate = "2023-01-01"
 
 # Define timeline of interest
 
-dayIntervals <- "1 week"  # daily, weekly, monthly, quarterly 
+dayIntervals <- "3 day"  # daily, weekly, monthly, quarterly 
 
 # Save data points 
 
-arrayForParameters <- array(dim = c(length(tickers),9))
+arrayForParameters <- array(dim = c(length(tickers),10))
 
 colnames(arrayForParameters) <- c("name", "datapoints in ti", "BICDiffRatio", "VAR lag", 
                                   "Granger Cause sentiment - course","p value 1",
-                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2")
+                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2", "Var lag 2")
 
 # Data load and execution 
 
@@ -420,6 +422,8 @@ for (tick in tickers){
     
     ticker_df_day_ts <- na_remove(ticker_df_day_ts) 
   
+ 
+    
   
   ### Comparison plots 
   
@@ -431,17 +435,45 @@ for (tick in tickers){
   
   tsb_app <- na_replace(tsb_app, fill=0) 
   
+  
+  ### Stationarity tests
+    
+  #############################################################################################  
+    
+  difference_ned_Fc <- forecast::ndiffs(tsb_app[,1])  
+  
+  difference_ned_Sent <- forecast::ndiffs(tsb_app[,2])
+  
+  print_color(paste(" Diff required course: ", difference_ned_Fc, ", Diff required sent: ", difference_ned_Sent), 'blue')
+  
+  if (difference_ned_Fc > 0){
+    tsb_app_c_st <- diff(tsb_app[,1], differences = difference_ned_Fc)
+  } else {tsb_app_c_st <- tsb_app[,1]}
+  
+  if (difference_ned_Sent > 0){
+    tsb_app_s_st <- diff(tsb_app[,2], differences = difference_ned_Sent)
+  } else {tsb_app_s_st <- tsb_app[,2]}
+  
+  cADF<- tseries::adf.test(tsb_app_c_st)
+  sADF <- tseries::adf.test(tsb_app_s_st)
+  
+  # ADF test
 
+  print(cADF)
+  print(sADF)
+  
   # Sentiment
 
-  p <- ts_ggplot (mean_ts) +  
+  p <- ts_ggplot (tsb_app_s_st) +  
   theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 18) + 
   theme(axis.text.x = element_text(angle = 90)) + 
   ggtitle(paste(tick, "Sentiment change")) + scale_fill_discrete(name = "Plots") + 
   scale_color_manual(values = c("lightblue", "orange")) + 
-  stat_peaks(geom = "text", colour = "blue", angle = 90, hjust = -0.1, x.label.fmt = "%d.%m", span = 5) +
+  stat_peaks(geom = "text", colour = "blue", angle = 90, 
+             hjust = -0.1, x.label.fmt = "%d.%m", 
+             span = 30, threshold=min(tsb_app_s_st)*0.30) +
   stat_peaks(geom = "rug", colour = "blue", sides = "b") +
-  expand_limits(y = max(mean_ts) + max(mean_ts)*0.30+ min(mean_ts)*-0.30)
+  expand_limits(y = max(tsb_app_s_st) + max(tsb_app_s_st)*0.30+ min(tsb_app_s_st)*-0.30)
 
   # Data points  
   
@@ -450,21 +482,21 @@ for (tick in tickers){
   theme(axis.text.x = element_text(angle = 90)) + 
   ggtitle(paste(tick, "Data points (base for sentiment estimation)")) + scale_fill_discrete(name = "Plots") + 
   scale_color_manual(values = c("lightblue", "orange")) + 
-  stat_peaks(geom = "text", colour = "black", angle = 90, hjust = -0.1, x.label.fmt = "%d.%m", span = 5) +
-  stat_peaks(geom = "rug", colour = "black", sides = "b") +
-  expand_limits(y = max(data_Points_Obtain_TS) + max(data_Points_Obtain_TS)*0.20)
+  stat_peaks(geom = "text", colour = "black", angle = 90, hjust = -0.1, x.label.fmt = "%d.%m", span = 5, ignore_threshold = 30) +
+  stat_peaks(geom = "rug", colour = "black", sides = "b") 
   
   # Course 
 
-  p3 <- ts_ggplot (ticker_df_day_ts) +  
+  p3 <- ts_ggplot (tsb_app_c_st) +  
   theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 18) + 
   theme(axis.text.x = element_text(angle = 90)) + 
   ggtitle(paste(tick, "closing courses")) + scale_fill_discrete(name = "Plots") + 
   scale_color_manual(values = c("lightblue", "orange")) + 
   stat_peaks(geom = "text", colour = "blue", angle = 90, 
-             hjust = -0.1, x.label.fmt = "%d.%m", span = 5) +
+             hjust = -0.1, x.label.fmt = "%d.%m", 
+             span = 30, threshold=min(tsb_app_c_st)*0.30) +
   stat_peaks(geom = "rug", colour = "blue", sides = "b") +
-  expand_limits(y = max(ticker_df_day_ts) + max(ticker_df_day_ts)*0.20)
+  expand_limits(y = max(tsb_app_c_st)*0.30)
   
   pa <- plot_grid(p, p3, align="v", ncol = 1)
   
@@ -477,21 +509,23 @@ for (tick in tickers){
   
   # First dependent second independent 
   
-  # tsb_app # SPLIT TIME SERIES 
+  # SPLIT TIME SERIES 
   
-  tb_sent <- tsb_app[,2]
+  tb_sent <- tsb_app_s_st
   
-  tb_course <- tsb_app[,1]
+  tb_course <- tsb_app_c_st
   
-  po <- VLTimeCausality::plotTimeSeries(tb_sent,tb_course, strTitle = "Comparison plot")
+  tsma <- merge(tb_sent,tb_course)
   
-  print(po)
+  tsma <- tsma[-1,]
   
-
+  tb_sent <- tsma[,1]
+  
+  tb_course <- tsma[,2]
   
   # Granger function 
   
-  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_sent, Y= tb_course, maxLag  = 5) # autoLagflag = TRUE
+  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_sent, Y= tb_course, maxLag = 10) 
   
   arrayForParameters[count,3] <- tstRes$BICDiffRatio 
   
@@ -502,13 +536,17 @@ for (tick in tickers){
   arrayForParameters[count,6] <- tstRes$p.val
   
   
-  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_course, Y= tb_sent, maxLag  = 5)
+  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_course, Y= tb_sent, maxLag = 10)
   
   arrayForParameters[count,7] <- tstRes$XgCsY_ftest
 
   arrayForParameters[count,8] <- tstRes$p.val
   
   arrayForParameters[count,9] <- tstRes$BICDiffRatio
+  
+  arrayForParameters[count,10] <- tstRes$maxLag
+  
+  
   
   print("----------------------------------------------------------------------")
   
@@ -522,7 +560,7 @@ arr
 
 # for every changed duration iteration
 
-openxlsx::write.xlsx(arr,"C:/Users/elias/OneDrive/Desktop/Meme_Thesis/7 Results H1/LSS_timeframes/1.xlsx")
+# openxlsx::write.xlsx(arr,"C:/Users/elias/OneDrive/Desktop/Meme_Thesis/7 Results H1/LSS_timeframes/1.xlsx")
 
 
 ```
