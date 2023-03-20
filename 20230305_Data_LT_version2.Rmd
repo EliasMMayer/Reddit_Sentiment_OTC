@@ -85,6 +85,8 @@ library("timetk")
 library("rjson")
 library("SentimentAnalysis")
 
+library("PerformanceAnalytics")
+
 ```
 
 ##  Load data and preperation
@@ -138,7 +140,7 @@ endCutOfDate = "2023-01-01"
 
 # Define timeline of interest
 
-dayIntervals <- "3 day"  # daily, weekly, monthly, quarterly 
+dayIntervals <- "1 week"  # daily, weekly, monthly, quarterly 
 
 # Save data points 
 
@@ -311,6 +313,19 @@ for (tick in tickers){
   
   
   
+ 
+  # Creates an object for predicted values over time
+  
+  
+  dat_sm_it_ts <- zoo(mean_df$fit, as.Date(mean_df$date, format="%Y-%m-%d"))
+  
+  mean_ts <- dat_sm_it_ts
+  
+
+  
+  
+  
+  
   ### FINANCE DATA
   
   #############################################################################################
@@ -348,21 +363,16 @@ for (tick in tickers){
     n <- nrow(grpTicker_df_dayrange)
     
     # Get closing % differences per day interval 
-  
-    sbux_ret <- ((grpTicker_df_dayrange[2:n, 2] - grpTicker_df_dayrange[1:(n-1), 2])/grpTicker_df_dayrange[1:(n-1), 2])
-     
-    grpTicker_df_dayrange = grpTicker_df_dayrange[-1,]
-     
-    grpTicker_df_dayrange$closePerc <- sbux_ret
      
     grpTicker_df_dayrange <- grpTicker_df_dayrange %>%  filter(Date >= s_date & Date <= e_date)
     
     # TS 
   
-    ticker_df_day_ts <- zoo(grpTicker_df_dayrange$closePerc, grpTicker_df_dayrange$Date) 
+    ticker_df_day_ts <- zoo(grpTicker_df_dayrange$adjClose, as.Date(grpTicker_df_dayrange$Date, format="%Y-%m-%d"))
     
-    ticker_df_day_ts <- na_remove(ticker_df_day_ts) 
-  
+    ticker_df_day_ts <- PerformanceAnalytics::CalculateReturns(ticker_df_day_ts) # calc returns
+    
+
   
   ### Comparison plots 
   
@@ -497,9 +507,9 @@ arr <- arrayForParameters %>%  as_tibble()
 
 arr
 
-# for every changed duration iteration
+pth<- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/7 Results H1/new_LT_",dayIntervals,".xlsx", sep="")
 
-# openxlsx::write.xlsx(arr,"C:/Users/elias/OneDrive/Desktop/Meme_Thesis/7 Results H1/LSS_timeframes/1.xlsx")
+openxlsx::write.xlsx(arr,pth)
 
 
 ```

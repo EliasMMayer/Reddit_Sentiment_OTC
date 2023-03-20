@@ -87,6 +87,8 @@ library("forecast")
 # variable lag granger
 library("VLTimeCausality")
 
+library("PerformanceAnalytics")
+
 ```
 
 ##  Load data and preperation
@@ -182,7 +184,7 @@ endCutOfDate = "2023-01-01"
 
 # Define timeline of interest
 
-dayIntervals <- "3 day"  # daily, weekly, monthly, quarterly 
+dayIntervals <- "1 week"  # daily, weekly, monthly, quarterly 
 
 # Save data points 
 
@@ -190,7 +192,7 @@ arrayForParameters <- array(dim = c(length(tickers),10))
 
 colnames(arrayForParameters) <- c("name", "datapoints in ti", "BICDiffRatio", "VAR lag", 
                                   "Granger Cause sentiment - course","p value 1",
-                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2", "Var lag 2")
+                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2", "stationarity")
 
 # Data load and execution 
 
@@ -354,14 +356,15 @@ for (tick in tickers){
   # Group by defined day intervals throughout the N years of available data and sum sentiment 
   
   mean_df <- dat_tst_it_weight %>% 
-    timetk::summarise_by_time(fit = mean((fit * (multiplierFromScore))),
+    timetk::summarise_by_time(fit = sum((fit * (multiplierFromScore))),
     .date_var = date, .by=dayIntervals, dP = n()) %>% drop_na() 
   
   data_Points_Obtain_TS <- zoo(mean_df$dP, mean_df$date)
   
   # Creates an object for predicted values over time
   
-  dat_sm_it_ts <- zoo(mean_df$fit, mean_df$date) 
+  
+  dat_sm_it_ts <- zoo(mean_df$fit, as.Date(mean_df$date, format="%Y-%m-%d"))
   
   mean_ts <- dat_sm_it_ts
   
@@ -407,27 +410,21 @@ for (tick in tickers){
     n <- nrow(grpTicker_df_dayrange)
     
     # Get closing % differences per day interval 
-  
-    sbux_ret <- ((grpTicker_df_dayrange[2:n, 2] - grpTicker_df_dayrange[1:(n-1), 2])/grpTicker_df_dayrange[1:(n-1), 2])
-     
-    grpTicker_df_dayrange = grpTicker_df_dayrange[-1,]
-     
-    grpTicker_df_dayrange$closePerc <- sbux_ret
      
     grpTicker_df_dayrange <- grpTicker_df_dayrange %>%  filter(Date >= s_date & Date <= e_date)
     
     # TS 
   
-    ticker_df_day_ts <- zoo(grpTicker_df_dayrange$closePerc, grpTicker_df_dayrange$Date) 
+    ticker_df_day_ts <- zoo(grpTicker_df_dayrange$adjClose, as.Date(grpTicker_df_dayrange$Date, format="%Y-%m-%d"))
     
-    ticker_df_day_ts <- na_remove(ticker_df_day_ts) 
-  
- 
+    ticker_df_day_ts <- PerformanceAnalytics::CalculateReturns(ticker_df_day_ts) # calc returns
     
+
   
   ### Comparison plots 
   
   #############################################################################################
+  
   
   # Bring for visualization to same units area - normalize 
   
@@ -444,7 +441,8 @@ for (tick in tickers){
   
   difference_ned_Sent <- forecast::ndiffs(tsb_app[,2])
   
-  print_color(paste(" Diff required course: ", difference_ned_Fc, ", Diff required sent: ", difference_ned_Sent), 'blue')
+  print_color(paste(" Diff required course: ", difference_ned_Fc, 
+                    ", Diff required sent: ", difference_ned_Sent), 'blue')
   
   if (difference_ned_Fc > 0){
     tsb_app_c_st <- diff(tsb_app[,1], differences = difference_ned_Fc)
@@ -461,6 +459,11 @@ for (tick in tickers){
 
   print(cADF)
   print(sADF)
+  
+  arrayForParameters[count,10] <- paste("course: ",cADF$p.value, " sentiment: ", sADF$p.value)
+  
+    
+  
   
   # Sentiment
 
@@ -560,7 +563,10 @@ arr
 
 # for every changed duration iteration
 
-# openxlsx::write.xlsx(arr,"C:/Users/elias/OneDrive/Desktop/Meme_Thesis/7 Results H1/LSS_timeframes/1.xlsx")
+
+pth<- paste("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/7 Results H1/new_NFIN_",dayIntervals,".xlsx", sep="")
+
+openxlsx::write.xlsx(arr,pth)
 
 
 ```
