@@ -89,6 +89,8 @@ library("VLTimeCausality")
 
 library("PerformanceAnalytics")
 
+library("vars")
+
 ```
 
 ##  Load data and preperation
@@ -120,11 +122,20 @@ endCutOfDate = "2023-01-01"
 
 # Save data points 
 
-arrayForParameters <- array(dim = c(length(tickers),10))
+arrayForParameters <- array(dim = c(length(tickers),12))
 
-colnames(arrayForParameters) <- c("name", "datapoints in ti", "BICDiffRatio", "VAR lag", 
-                                  "Granger Cause sentiment - course","p value 1",
-                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2", "Var lag2")
+colnames(arrayForParameters) <- c("name", 
+                                  "datapoints", 
+                                  "BICDiffRatio", 
+                                  "lag", 
+                                  "Granger Cause sentiment - course",
+                                  "p value 1",
+                                  "Granger Cause course - sentiment",
+                                  "p value 2", 
+                                  "BICDiffRatio 2", 
+                                  "ADF", 
+                                  "lag_aic",
+                                  "lag_hq")
 
 ### Text
 
@@ -184,15 +195,7 @@ endCutOfDate = "2023-01-01"
 
 # Define timeline of interest
 
-dayIntervals <- "1 week"  # daily, weekly, monthly, quarterly 
-
-# Save data points 
-
-arrayForParameters <- array(dim = c(length(tickers),10))
-
-colnames(arrayForParameters) <- c("name", "datapoints in ti", "BICDiffRatio", "VAR lag", 
-                                  "Granger Cause sentiment - course","p value 1",
-                                  "Granger Cause course - sentiment","p value 2", "BICDiffRatio 2", "stationarity")
+dayIntervals <- "1 day"  # daily, weekly, monthly, quarterly 
 
 # Data load and execution 
 
@@ -318,7 +321,7 @@ for (tick in tickers){
   
   print(paste("reported range: start: ", s_date, ", end: ", e_date))
   
-  dat_join <- dat_tst_it %>%  dplyr::mutate(date = Date) %>%  select(-Date)
+  dat_join <- dat_tst_it %>%  dplyr::mutate(date = Date) %>%  dplyr::select(-Date)
   
   # cut Ticker
   
@@ -520,7 +523,52 @@ for (tick in tickers){
   
   tsma <- merge(tb_sent,tb_course)
   
+  # insert missing high freq data if required #################################
+  
+  if (dayIntervals == "1 day") {
+      
+    ts_zoo_complete <- zoo(tsma, seq(from = start(tsma), to = end(tsma), by = "day"))
+    
+    coredata(ts_zoo_complete)[is.na(ts_zoo_complete)] <- 0
+    
+    tsma <- ts_zoo_complete
+  }
+
   tsma <- tsma[-1,]
+  
+  
+  # Lag selection ##############################################################
+  
+  max_lag <- 10  
+  
+  aic_var_lags <- VARselect(tsma, lag.max = max_lag, type = "both")
+  
+  optimal_lag_aic <- aic_var_lags$selection[1]
+  optimal_lag_hq <- aic_var_lags$selection[2]
+  
+  arrayForParameters[count,11] <- optimal_lag_aic
+  arrayForParameters[count,12] <- optimal_lag_hq
+  
+  # Cross-correlation
+  ccf_result <- ccf(tsma[,1], tsma[,2], lag.max = max_lag, plot = FALSE)  #
+  
+  # Lag with the highest cross-correlation
+  optimal_lag_ccf <- which.max(abs(ccf_result$acf))
+
+  # Decide between lags 
+  
+  # Majority vote for optimal lag
+  lag_counts <- table(c(optimal_lag_aic, optimal_lag_hq, optimal_lag_ccf))
+  optimal_lag <- as.numeric(names(lag_counts[lag_counts >= 2]))
+  
+  # Default BIC 
+  if (length(optimal_lag) == 0) {
+    optimal_lag <- optimal_lag_hq
+  }
+    
+  ##############################################################################
+  
+  # Split 
   
   tb_sent <- tsma[,1]
   
@@ -528,7 +576,7 @@ for (tick in tickers){
   
   # Granger function 
   
-  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_sent, Y= tb_course, maxLag = 10) 
+  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_sent, Y= tb_course, maxLag = optimal_lag, autoLagflag=FALSE) 
   
   arrayForParameters[count,3] <- tstRes$BICDiffRatio 
   
@@ -539,17 +587,13 @@ for (tick in tickers){
   arrayForParameters[count,6] <- tstRes$p.val
   
   
-  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_course, Y= tb_sent, maxLag = 10)
+  tstRes <- VLTimeCausality::VLGrangerFunc(X = tb_course, Y= tb_sent, maxLag = optimal_lag, autoLagflag=FALSE)
   
   arrayForParameters[count,7] <- tstRes$XgCsY_ftest
 
   arrayForParameters[count,8] <- tstRes$p.val
   
   arrayForParameters[count,9] <- tstRes$BICDiffRatio
-  
-  arrayForParameters[count,10] <- tstRes$maxLag
-  
-  
   
   print("----------------------------------------------------------------------")
   
