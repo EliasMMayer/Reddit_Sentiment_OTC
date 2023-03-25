@@ -1,0 +1,182 @@
+---
+title: "Untitled"
+author: "Elias Mayer"
+date: "2023-03-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library("tidyverse")
+library("purrr")
+library("factoextra")
+library("ggrepel")
+
+```
+
+```{r batchEval, echo=FALSE}
+
+# Helper functions 
+
+`%ni%` <- Negate(`%in%`)
+
+# Adjust path to Folder Struct 
+
+basePathC <- 'C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data'
+
+# Paths for Ticker data
+
+basepath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Cleaned_relevant_data/Ticker specific/"
+  
+tickerBasePath <- "C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/Stock_data_WF/"
+
+
+# Defined tickers for inspection 
+
+tickers <- c("TLSS", "EEENF","UAPC","PASO","OZSC","ILUS", "BBRW", "RXMD","DECN","HCMC")
+
+count = 1 # for array
+
+results <- tibble()
+
+
+
+for (tick in tickers){
+  
+  print(paste("Ticker symbol: ", tick))
+  
+
+  
+  # Prepare for user data
+  
+  string_path <- paste(basepath, tick,"/" ,sep="")
+  
+  # Get stock data
+  
+  string_path_tickers <- paste(tickerBasePath, tick,".csv" ,sep="")
+  
+  ticker_df_day <- read.csv(string_path_tickers)
+
+  # Define strings 
+  
+  comments_general <- paste(string_path, "general_comments_score_",tick,"_added.csv" ,sep="")
+  
+  comments_assocaited <- paste(string_path, "associated_comments_score_",tick,"_added.csv" ,sep="")
+  
+  submissions_body <- paste(string_path, "submissions_",tick,"_body.csv" ,sep="")
+    
+  submissions_headline <- paste(string_path, "submissions_",tick,"_title.csv" ,sep="")
+  
+  discord_general <- paste(string_path, "discord_",tick,"_body.csv" ,sep="")
+
+  # Load ticker information
+  
+  comments_general_df <- read.csv(comments_general)
+  
+  comments_assocaited_df <- read.csv(comments_assocaited)
+  
+  submissions_body_df <- read.csv(submissions_body)
+  
+  submissions_headline_df <- read.csv(submissions_headline)
+  
+  discord_general_df <- read.csv(discord_general)
+  
+  ################################################ Prepare data for prediction model 
+  
+  # Append all comments into one data frame (general ,associated and discord)
+  
+  dsc_general_df <- discord_general_df %>% dplyr::rename(ID = AuthorID) %>% 
+    mutate(Score=0, parentID="Null", ID.prefix = "Null", link_id_body = "Null")
+  
+  # Check if structure like supposed to if not transform columns to be equally structured 
+  
+  if ("ID.prefix" %ni% colnames(comments_general_df)) {
+  comments_general_df <- comments_general_df %>% 
+    separate(col=link_id,sep="_",into = c("ID.prefix","link_id_body"))
+  }
+  
+  if ("ID.prefix" %ni% colnames(comments_assocaited_df))  {
+  comments_assocaited_df <- comments_assocaited_df %>% 
+    separate(col=link_id,sep="_",into = c("ID.prefix","link_id_body"))
+  }
+  
+  # Combine into one data frame 
+  
+  bind_cmts_it <- rbind(comments_general_df,comments_assocaited_df,dsc_general_df) %>% 
+  mutate(DateX = as.Date(Date)) %>% dplyr::select(-Date) %>% dplyr::rename(Date = DateX) %>% distinct()
+
+bind_cmts_it$Ticker <- tick
+
+results <- bind_rows(results, bind_cmts_it)
+}
+
+#Sum stats
+
+ticker_stats <- results %>%
+  dplyr::group_by(Ticker) %>%
+  dplyr::summarize(
+    total_comments = n(),
+    unique_users = n_distinct(Author),
+    max_comments_by_same_user = max(table(Author)),
+    avg_comments_per_user = total_comments / unique_users
+  )
+
+# ----
+
+# Func for 5%
+get_top_5_percent_authors_score <- function(df) {
+  authors_count <- df %>%
+    dplyr::group_by(Ticker, Author) %>%
+    dplyr::summarize(num_comments = n()) %>%
+    dplyr::mutate(quantile_95 = quantile(num_comments, 0.95)) %>%
+    dplyr::filter(num_comments >= quantile_95) 
+  
+  return(authors_count)
+}
+
+# ----
+
+# Add 95 to see if 5% over proportional influential 
+
+result <- results %>%
+  dplyr::group_by(Ticker) %>%
+  group_map(~ get_top_5_percent_authors_score(.x), .keep = TRUE)%>%
+  bind_rows() %>% ungroup() %>% dplyr::group_by(Ticker) %>% 
+  dplyr::summarise(sum5 = sum(num_comments), quantile_95 = max(quantile_95))
+
+ticker_stats <- left_join(ticker_stats, result, by= "Ticker")
+
+# all in percentage for comparability
+
+tibble_users <- ticker_stats %>% mutate(max_comments_by_same_user = max_comments_by_same_user/total_comments,
+                                        sum5=sum5/total_comments,
+                                        uniqueUserPercentage = unique_users/total_comments)
+
+
+#add metadata e.g., which market 
+
+tibble_users$market <- c("Pink","Expert Market","Pink","Pink","Pink","Pink","Expert Market","OTCQB","Pink","Pink")
+
+tibble_users$Predictiveinfluence <- c("None","None","PI both","None","None","PI F-test","None","None","PI both","None")
+
+# Exploratory analyses 
+
+p <- ggplot(tibble_users, aes(x = avg_comments_per_user, y = uniqueUserPercentage, 
+                         color = Predictiveinfluence,
+                         label = Ticker)) +
+  geom_point(size = 1) +
+  geom_label_repel(aes(label = Ticker), size = 2.5, nudge_x = 1)+
+  labs(title = "Average Comments per User vs. Unique User Percentage",
+       x = "Average Comments per User",
+       y = "Percentage of unique posters") +  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 14)
+
+ggsave(filename = "high_quality_plot.png", plot = p, dpi = 300, width = 8, height = 6, units = "in")
+
+ggplot(tibble_users, aes(x = sum5, y=reorder(Ticker, sum5), fill = Predictiveinfluence)) +
+  geom_col(size = 1) +
+  theme_minimal() +
+  labs(title = "Top 5% commenters contribution to overall number of comments",
+       x = "Sum5",
+       y = "Unique Users") + theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 18)
+
+```
