@@ -11,6 +11,7 @@ library("tidyverse")
 library("purrr")
 library("factoextra")
 library("ggrepel")
+library("hrbrthemes")
 
 ```
 
@@ -168,15 +169,59 @@ p <- ggplot(tibble_users, aes(x = avg_comments_per_user, y = uniqueUserPercentag
   geom_label_repel(aes(label = Ticker), size = 2.5, nudge_x = 1)+
   labs(title = "Average Comments per User vs. Unique User Percentage",
        x = "Average Comments per User",
-       y = "Percentage of unique posters") +  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 14)
+       y = "Percentage of unique posters") +theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 14)
 
-ggsave(filename = "high_quality_plot.png", plot = p, dpi = 300, width = 8, height = 6, units = "in")
 
-ggplot(tibble_users, aes(x = sum5, y=reorder(Ticker, sum5), fill = Predictiveinfluence)) +
+ag <- ggplot(tibble_users, aes(x = sum5, y=reorder(Ticker, sum5), fill = Predictiveinfluence)) +
   geom_col(size = 1) +
   theme_minimal() +
-  labs(title = "Top 5% commenters contribution to overall number of comments",
-       x = "Sum5",
-       y = "Unique Users") + theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 18)
+  labs(title = "The number of comments contributed by the most engaged users",
+       x = "Top 5% Users' Contribution to Total",
+       y = "Tickers") + theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 14)
+
+
+
+```
+
+
+```{r userAge, echo=FALSE}
+
+# Examine account age differences, input Reddit fetched user data (PRAW)
+
+# Add file which has user creation date, see .py script: PRAW_get_user_data
+
+reddit_users_df <- read.csv("C:/Users/elias/OneDrive/Desktop/Meme_Thesis/3 Data/User data/master/User_data.csv")
+
+user_df <- reddit_users_df %>%  
+            as_tibble() %>%
+            mutate(creation_date = as.POSIXct(created_utc, origin = "1970-01-01", tz = "UTC"))
+
+
+user_df_summary <- user_df %>% filter(is.na(creation_date) == FALSE) %>% 
+  dplyr::group_by(Ticker) %>% filter(Date > "01/01/2020") %>% 
+  dplyr::summarise(
+    avg_age_accounts = as.POSIXct(mean(as.numeric(creation_date), na.rm = TRUE),
+                                  origin = "1970-01-01", tz = "UTC"),
+    min_age_accounts = as.POSIXct(min(as.numeric(creation_date), na.rm = TRUE),
+                                  origin = "1970-01-01", tz = "UTC"),
+    max_age_accounts = as.POSIXct(max(as.numeric(creation_date), na.rm = TRUE),
+                                  origin = "1970-01-01", tz = "UTC"),
+    median_age_accounts = as.POSIXct(median(as.numeric(creation_date), na.rm = TRUE),
+                                     origin = "1970-01-01", tz = "UTC"),
+    quantile_25 = as.POSIXct(quantile(as.numeric(creation_date), 0.25, na.rm = TRUE),
+                             origin = "1970-01-01", tz = "UTC"),
+    quantile_75 = as.POSIXct(quantile(as.numeric(creation_date), 0.75, na.rm = TRUE),
+                             origin = "1970-01-01", tz = "UTC")
+  )
+
+
+user_df_summary$Predictiveinfluence <- c("None","None","PI both","None","None","PI F-test","None","None","PI both","None")
+
+user_df %>% drop_na() %>% ggplot(aes(x = Ticker, y = creation_date)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(x = "Ticker", y = "Account Creation Date") +
+  ggtitle("Distribution of Account Creation Dates by Ticker") + 
+  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 14)
 
 ```
