@@ -224,4 +224,42 @@ user_df %>% drop_na() %>% ggplot(aes(x = Ticker, y = creation_date)) +
   ggtitle("Distribution of Account Creation Dates by Ticker") + 
   theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 14)
 
+
+
+
+# Plot
+user_df %>%
+ # filter(Ticker == 'TLSS' | Ticker == 'EEENF') %>%
+  ggplot(aes(x = creation_date)) +
+  geom_histogram(binwidth = 7 * 24 * 60 * 60, fill = "steelblue") +
+  facet_wrap(~ Ticker) +
+  scale_x_datetime(limits = c(as.POSIXct("2018-01-25"), as.POSIXct("2021-06-25"))) +
+  theme_minimal() +
+  labs(x = "Ticker", y = "Account Creation Date") +
+  ggtitle("Distribution of Account Creation Dates by Ticker") +
+  theme_ipsum(grid = "XY", base_family = "Roboto Condensed", plot_title_size = 14)
+
+library(zoo)
+library(ggpmisc)
+library(tsbox)
+
+eenf_user_creat <- user_df %>%
+  filter(Ticker == 'EEENF') %>% drop_na() %>% 
+  select(Author, creation_date) %>%
+  mutate(creation_date = as.Date(creation_date)) %>%
+  group_by(creation_date) %>%
+  summarise(count = n())
+
+tsb_EEENF <- zoo(eenf_user_creat$count, order.by = eenf_user_creat$creation_date)
+
+ts_ggplot(tsb_EEENF)+  
+  theme_ipsum(grid="XY", base_family  = "Roboto Condensed", plot_title_size = 18) + 
+  theme(axis.text.x = element_text(angle = 90)) + 
+  ggtitle(paste("EEENF", "User account creations")) + scale_fill_discrete(name = "Plots")+
+  stat_peaks(geom = "text", colour = "black", angle = 90, hjust = -0.9, x.label.fmt = "%d.%m", span = 20) +
+  scale_x_date(limits = c(as.Date("2020-12-01"), as.Date("2021-5-31"))) +
+  theme_ipsum(grid = "XY", base_family = "Roboto Condensed", plot_title_size = 14)+
+  expand_limits(y = max(tsb_EEENF) + max(tsb_EEENF)*0.30)
+
+
 ```
